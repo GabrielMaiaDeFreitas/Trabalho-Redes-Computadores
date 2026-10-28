@@ -1,562 +1,631 @@
 package blockchain;
 
+import java.io.BufferedReader;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+/**
+ * Nó "servent" do protocolo BCP: servidor e cliente ao mesmo tempo.
+ *
+ * Uso:
+ *   NodeServer <porta> SEED                      -> nó semente (cria a cadeia)
+ *   NodeServer <porta> [<seedHost:porta>] [peers...]
+ *
+ * Sem endereço de seed, usa o seed gravado em NetworkConfig.
+ * Depois de iniciar, o terminal aceita comandos (digite "ajuda").
+ *
+ * Fluxos da especificação:
+ *   Fluxo A (bootstrap)    -> bootstrap(), executado ao iniciar o nó.
+ *   Fluxo B (sincronização)-> synchronizeWithPeers(), ao iniciar e no comando "sync".
+ *   Fluxo C (novo bloco)   -> broadcastBlockchain(), após o comando "minerar".
+ *
+ * Toda mensagem enviada ou recebida é impressa com o prefixo [BCP].
+ */
 public class NodeServer {
 
+    // Tempo máximo que uma conexão de entrada pode ficar sem mensagens.
+    private static final int IDLE_TIMEOUT_MS = 30000;
+
+    // ID enviado no HELLO pelos nós: "Node-<porta de escuta>".
+    private static final Pattern NODE_ID = Pattern.compile("Node-(\\d{1,5})");
+
+    // Uma thread por conexão recebida.
+    private static final ExecutorService connectionPool =
+        Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setDaemon(true);
+            return thread;
+        });
+
     public static void main(String[] args) {
-        int port = 5000;
-        boolean seed = false;
+        int port = NetworkConfig.SEED_PORT;
 
         if (args.length > 0) {
             port = Integer.parseInt(args[0]);
         }
 
         final int serverPort = port;
+        NodeNetwork.setOwnPort(serverPort);
 
-        if (args.length > 1 && "SEED".equalsIgnoreCase(args[1])) {
-            seed = true;
+        boolean seed = args.length > 1 && "SEED".equalsIgnoreCase(args[1]);
+
+        // Endereço do seed: argumento ou o valor gravado em NetworkConfig.
+        String seedAddress = null;
+
+        if (!seed) {
+            seedAddress = args.length > 1
+                ? args[1]
+                : NetworkConfig.SEED_HOST + ":" + NetworkConfig.SEED_PORT;
+
+            NodeNetwork.addPeer(seedAddress);
+        }
+
+        // Peers extras informados nos argumentos.
+        for (int i = 2; i < args.length; i++) {
+            NodeNetwork.addPeer(args[i]);
         }
 
         // Apenas o seed cria a blockchain inicial.
         if (seed) {
             NoobChain.initializeBlockchain();
-
-            Block fourthBlock = new Block(
-                "Sou o quarto bloco",
-                NoobChain.blockchain.get(NoobChain.blockchain.size() - 1).hash
-            );
-
             System.out.println("Tentando minerar o bloco 4...");
-            fourthBlock.mineBlock(NoobChain.difficulty);
-            NoobChain.blockchain.add(fourthBlock);
+            NoobChain.mineNewBlock("Sou o quarto bloco");
         } else {
-            // Os outros nós começam vazios e tentam sincronizar com os peers.
-            NoobChain.blockchain.clear();
+            // Os outros nós começam vazios e sincronizam com os peers.
+            NoobChain.clear();
         }
 
-        // Registra os peers configurados nos argumentos.
-        for (int i = 1; i < args.length; i++) {
-            if (!"SEED".equalsIgnoreCase(args[i])) {
-                NodeNetwork.addPeer(args[i]);
-            }
+        ServerSocket serverSocket;
+
+        try {
+            serverSocket = new ServerSocket(serverPort);
+        } catch (IOException e) {
+            System.out.println(
+                "Erro ao iniciar o servidor na porta " + serverPort
+                + ": " + e.getMessage()
+            );
+            return;
         }
 
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
-            System.out.println("Nó aguardando conexões na porta " + port);
+        System.out.println(
+            "Nó " + NodeNetwork.getNodeId()
+            + " aguardando conexões na porta " + serverPort
+            + (seed ? " (SEED)" : "")
+        );
 
-            if (!seed && args.length > 1) {
-                String seedAddress = args[1];
+        Thread acceptThread = new Thread(
+            () -> acceptLoop(serverSocket), "accept-" + serverPort
+        );
+        acceptThread.start();
 
-                System.out.println(
-                    "A registar este nó no seed: " + seedAddress
-                );
+        if (!seed) {
+            final String seedFinal = seedAddress;
 
-                registerWithSeed(serverPort, seedAddress);
-                startPeerRefreshThread(serverPort, seedAddress);
-            }
+            Thread startupThread = new Thread(() -> {
+                bootstrap(seedFinal);
+                synchronizeWithPeers();
+            }, "startup");
+            startupThread.setDaemon(true);
+            startupThread.start();
+        }
 
-            if (!seed) {
-                Thread syncThread = new Thread(
-                    () -> synchronizeWithPeers(serverPort)
-                );
-                syncThread.setDaemon(true);
-                syncThread.start();
-            }
+        runConsole();
 
-            while (true) {
-                try (Socket socket = serverSocket.accept()) {
-                    socket.setSoTimeout(10000);
+        // Sem console (stdin fechado), o nó continua servindo.
+        try {
+            acceptThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
+    // ------------------------------------------------------------------
+    // Papel de servidor
+    // ------------------------------------------------------------------
+
+    private static void acceptLoop(ServerSocket serverSocket) {
+        while (!serverSocket.isClosed()) {
+            try {
+                Socket socket = serverSocket.accept();
+                connectionPool.submit(() -> handleConnection(socket));
+            } catch (IOException e) {
+                if (!serverSocket.isClosed()) {
                     System.out.println(
-                        "Conexão recebida de: " + socket.getInetAddress()
-                    );
-
-                    try (
-                        ObjectOutputStream out =
-                            new ObjectOutputStream(socket.getOutputStream());
-                        ObjectInputStream in =
-                            new ObjectInputStream(socket.getInputStream())
-                    ) {
-                        Object object = in.readObject();
-
-                        if (!(object instanceof Message)) {
-                            sendReject(out, "Objeto recebido não é uma mensagem BCP.");
-                            continue;
-                        }
-
-                        Message request = (Message) object;
-
-                        if (request.getType() == null) {
-                            sendReject(out, "Tipo de mensagem ausente.");
-                            continue;
-                        }
-
-                        String type = request.getType();
-
-                        if ("HELLO".equals(type)) {
-                            handleHello(request, out);
-
-                        } else if ("MINE".equals(type)) {
-                            String data = request.getData();
-
-                            if (data == null || data.trim().isEmpty()) {
-                                sendReject(out, "Dados do bloco não podem estar vazios.");
-                                continue;
-                            }
-
-                            NoobChain.mineNewBlock(data);
-                            out.writeObject(new Message("MINE_COMPLETE"));
-                            out.flush();
-
-                        } else if ("GET_BLOCKCHAIN".equals(type)) {
-                            sendBlockchain(out);
-
-                        } else if ("GET_PEERS".equals(type)) {
-                            Message response = new Message(
-                                "PEERS_LIST",
-                                NodeNetwork.getPeers(),
-                                true
-                            );
-                            out.writeObject(response);
-                            out.flush();
-
-                        } else if ("PEERS_LIST".equals(type)) {
-                            ArrayList<String> receivedPeers = request.getPeers();
-
-                            if (receivedPeers == null) {
-                                sendReject(out, "Lista de peers ausente.");
-                                continue;
-                            }
-
-                            for (String peer : receivedPeers) {
-                                NodeNetwork.addPeer(peer);
-                            }
-
-                            out.writeObject(new Message("PEERS_LIST_RECEIVED"));
-                            out.flush();
-
-                        } else if ("BLOCKCHAIN_COPY".equals(type)) {
-                            handleBlockchainCopy(request, out);
-
-                        } else if ("SYNC".equals(type)) {
-                            System.out.println("Pedido de sincronização recebido.");
-                            synchronizeWithPeers(port);
-                            out.writeObject(new Message("SYNC_COMPLETE"));
-                            out.flush();
-
-                        } else {
-                            sendReject(out, "Tipo de mensagem desconhecido: " + type);
-                        }
-                    }
-                } catch (Exception e) {
-                    System.out.println(
-                        "Erro ao processar conexão: " + e.getMessage()
+                        "Erro ao aceitar conexão: " + e.getMessage()
                     );
                 }
             }
+        }
+    }
+
+    /**
+     * Atende uma conexão de entrada. A conexão fica aberta e pode
+     * transportar várias mensagens; a primeira precisa ser HELLO.
+     */
+    private static void handleConnection(Socket socket) {
+        // Antes do HELLO o peer é identificado pelo IP e porta TCP de origem.
+        String peer = socket.getInetAddress().getHostAddress()
+            + ":" + socket.getPort();
+
+        try (Socket s = socket) {
+            s.setSoTimeout(IDLE_TIMEOUT_MS);
+
+            ObjectOutputStream out =
+                new ObjectOutputStream(s.getOutputStream());
+            out.flush();
+            ObjectInputStream in =
+                new ObjectInputStream(s.getInputStream());
+
+            boolean handshakeDone = false;
+
+            while (true) {
+                Object object;
+
+                try {
+                    object = in.readObject();
+                } catch (EOFException e) {
+                    break; // O peer fechou a conexão.
+                } catch (SocketTimeoutException e) {
+                    System.out.println(
+                        "Conexão de " + peer + " encerrada por inatividade."
+                    );
+                    break;
+                }
+
+                if (!(object instanceof NetworkMessage)) {
+                    sendReject(out, peer, "Objeto recebido não é uma mensagem BCP.");
+                    break;
+                }
+
+                NetworkMessage request = (NetworkMessage) object;
+
+                if (request.getType() == null) {
+                    sendReject(out, peer, "Tipo de mensagem ausente.");
+                    break;
+                }
+
+                PeerConnection.log(false, peer, request);
+
+                // Handshake obrigatório antes de qualquer outra mensagem.
+                if (!handshakeDone) {
+                    if (request.getType() != MessageType.HELLO) {
+                        sendReject(out, peer,
+                            "Handshake HELLO obrigatório antes de "
+                            + request.getType() + "."
+                        );
+                        break;
+                    }
+
+                    String identified = handleHello(request, out, s, peer);
+
+                    if (identified == null) {
+                        break;
+                    }
+
+                    peer = identified;
+                    handshakeDone = true;
+                    continue;
+                }
+
+                handleMessage(request, out, peer);
+            }
+
         } catch (Exception e) {
             System.out.println(
-                "Erro ao iniciar o servidor: " + e.getMessage()
+                "Erro ao processar conexão de " + peer + ": "
+                + e.getMessage()
             );
         }
     }
 
-    private static void handleHello(
-            Message request, ObjectOutputStream out) throws Exception {
+    /**
+     * Valida o HELLO (versão do protocolo e ID do nó) e responde ACK.
+     * Devolve o nome usado para o peer nos logs seguintes, ou null se o
+     * handshake foi rejeitado.
+     *
+     * Quando o ID tem o formato "Node-<porta>", o endereço de escuta do
+     * peer é o IP de origem da conexão + essa porta, e ele é adicionado à
+     * lista de peers conhecidos. É assim que nós antigos descobrem os nós
+     * que entram depois na rede.
+     */
+    private static String handleHello(
+            NetworkMessage request, ObjectOutputStream out,
+            Socket socket, String peer) throws IOException {
 
-        String nodeId = request.getData();
+        String hello = request.getPayloadAsString();
+        String prefix = PeerConnection.PROTOCOL_VERSION + "-";
 
-        if (nodeId == null || nodeId.trim().isEmpty()) {
-            sendReject(out, "Identificação do nó ausente no HELLO.");
-            return;
+        if (hello == null || hello.trim().isEmpty()) {
+            sendReject(out, peer, "Identificação do nó ausente no HELLO.");
+            return null;
         }
 
-        System.out.println("HELLO recebido de: " + nodeId);
-        out.writeObject(new Message("HELLO", "ACK: " + nodeId));
-        out.flush();
+        if (!hello.startsWith(prefix) || hello.length() == prefix.length()) {
+            sendReject(out, peer,
+                "Versão de protocolo incompatível: \"" + hello
+                + "\". Esperado: " + prefix + "<id do nó>."
+            );
+            return null;
+        }
+
+        String nodeId = hello.substring(prefix.length());
+        String listenAddress = null;
+
+        Matcher matcher = NODE_ID.matcher(nodeId);
+        if (matcher.matches()) {
+            listenAddress = socket.getInetAddress().getHostAddress()
+                + ":" + matcher.group(1);
+        }
+
+        send(out, peer, new NetworkMessage(
+            MessageType.ACK,
+            PeerConnection.PROTOCOL_VERSION + "-" + NodeNetwork.getNodeId()
+        ));
+
+        System.out.println(
+            "Handshake concluído com " + nodeId
+            + (listenAddress == null ? "" : " (escuta em " + listenAddress + ")")
+        );
+
+        if (listenAddress != null) {
+            NodeNetwork.addPeer(listenAddress);
+            return listenAddress;
+        }
+
+        return nodeId;
     }
 
-    private static void handleBlockchainCopy(
-            Message request, ObjectOutputStream out) throws Exception {
+    private static void handleMessage(
+            NetworkMessage request, ObjectOutputStream out, String peer)
+            throws IOException {
 
-        ArrayList<Block> received = request.getBlockchain();
+        switch (request.getType()) {
 
-        if (received == null || !NoobChain.isChainValid(received)) {
-            sendReject(out, "Blockchain inválida.");
-            return;
+            case HELLO:
+                // Handshake repetido: apenas confirma de novo.
+                send(out, peer, new NetworkMessage(
+                    MessageType.ACK,
+                    PeerConnection.PROTOCOL_VERSION + "-"
+                    + NodeNetwork.getNodeId()
+                ));
+                break;
+
+            case GET_PEERS: {
+                // Fluxo A, passo 5: responde com os endereços dos OUTROS
+                // nós conhecidos (sem o próprio solicitante).
+                ArrayList<String> others = NodeNetwork.getPeers();
+                others.remove(peer);
+                send(out, peer, new NetworkMessage(
+                    MessageType.PEERS_LIST, others
+                ));
+                break;
+            }
+
+            case GET_BLOCKCHAIN:
+                // Fluxo B, passo 2: envia a cópia da cadeia local.
+                send(out, peer, new NetworkMessage(
+                    MessageType.BLOCKCHAIN_COPY, NoobChain.getBlockchain()
+                ));
+                break;
+
+            case BLOCKCHAIN_COPY: {
+                // Fluxo C, passo 3: valida a cadeia anunciada e adota se
+                // for válida e maior; senão responde REJECT com o motivo.
+                ArrayList<Block> received = request.getPayloadAsBlockchain();
+                NoobChain.AdoptResult result = NoobChain.tryAdopt(received);
+
+                if (result == NoobChain.AdoptResult.ADOPTED) {
+                    System.out.println(
+                        "Fluxo C: cadeia de " + peer + " adotada ("
+                        + NoobChain.size() + " blocos)."
+                    );
+                    send(out, peer, new NetworkMessage(
+                        MessageType.ACK, result.getReason()
+                    ));
+                } else {
+                    System.out.println(
+                        "Fluxo C: cadeia de " + peer + " descartada ("
+                        + result.getReason() + ")"
+                    );
+                    sendReject(out, peer, result.getReason());
+                }
+                break;
+            }
+
+            case REJECT:
+            case ACK:
+                // Resposta final do peer (ex.: fim do Fluxo B); já foi
+                // impressa no log [BCP] e não recebe resposta.
+                break;
+
+            default:
+                // PEERS_LIST é enviada apenas pelo servidor.
+                sendReject(out, peer, "Mensagem " + request.getType()
+                    + " não é esperada pelo servidor.");
         }
+    }
 
-        if (received.size() <= NoobChain.blockchain.size()) {
-            sendReject(out, "Tamanho menor ou igual à cadeia local.");
-            return;
-        }
-
-        boolean adopted = NoobChain.adoptBlockchain(received);
-
-        if (adopted) {
-            System.out.println(
-                "Blockchain recebida e adotada: "
-                + NoobChain.blockchain.size() + " blocos."
-            );
-            out.writeObject(new Message("BLOCKCHAIN_RECEIVED"));
-        } else {
-            sendReject(out, "A cadeia não pôde ser adotada.");
-        }
-
+    private static void send(
+            ObjectOutputStream out, String peer, NetworkMessage message)
+            throws IOException {
+        PeerConnection.log(true, peer, message);
+        out.writeObject(message);
+        out.reset();
         out.flush();
     }
 
     private static void sendReject(
-            ObjectOutputStream out, String reason) throws Exception {
-        out.writeObject(new Message("REJECT", reason));
-        out.flush();
+            ObjectOutputStream out, String peer, String reason)
+            throws IOException {
+        send(out, peer, new NetworkMessage(MessageType.REJECT, reason));
     }
 
-    private static void sendBlockchain(ObjectOutputStream out)
-            throws Exception {
-        ArrayList<Block> copy = new ArrayList<>(NoobChain.blockchain);
-        out.writeObject(new Message("BLOCKCHAIN_COPY", copy));
-        out.flush();
+    // ------------------------------------------------------------------
+    // Papel de cliente
+    // ------------------------------------------------------------------
 
-        System.out.println("Blockchain enviada: " + copy.size() + " blocos.");
+    /**
+     * Fluxo A: conecta ao seed, faz HELLO/ACK, pede GET_PEERS e adiciona
+     * os endereços da PEERS_LIST à lista de descoberta.
+     */
+    public static void bootstrap(String seedAddress) {
+        System.out.println(
+            "\n=== Fluxo A: bootstrap e descoberta de peers via "
+            + seedAddress + " ==="
+        );
+
+        try (PeerConnection connection =
+                PeerConnection.open(seedAddress, NodeNetwork.getNodeId())) {
+
+            NetworkMessage response = connection.request(
+                new NetworkMessage(MessageType.GET_PEERS)
+            );
+
+            if (response.getType() != MessageType.PEERS_LIST) {
+                System.out.println(
+                    "Fluxo A: resposta inesperada de " + seedAddress
+                    + ": " + response.getType()
+                );
+                return;
+            }
+
+            ArrayList<String> received = response.getPayloadAsPeers();
+
+            if (received == null) {
+                System.out.println(
+                    "Fluxo A: lista de peers inválida recebida de " + seedAddress
+                );
+                return;
+            }
+
+            for (String peer : received) {
+                NodeNetwork.addPeer(peer);
+            }
+
+            System.out.println(
+                "Fluxo A concluído: " + received.size()
+                + " endereço(s) recebido(s). Peers conhecidos: "
+                + NodeNetwork.getPeers()
+            );
+
+        } catch (Exception e) {
+            System.out.println(
+                "Fluxo A: erro ao contatar o seed " + seedAddress + ": "
+                + e.getMessage()
+            );
+        }
     }
 
-    private static void synchronizeWithPeers(int ownPort) {
-        ArrayList<String> peers = NodeNetwork.getPeers();
+    /**
+     * Fluxo B: pede a blockchain a cada peer e aplica a regra da maior
+     * cadeia válida. Se a cadeia for inválida ou menor/igual, descarta e
+     * envia REJECT; se for adotada, confirma com ACK.
+     */
+    public static void synchronizeWithPeers() {
+        for (String peer : NodeNetwork.getPeers()) {
+            if (NodeNetwork.isSelf(peer)) {
+                continue;
+            }
 
-        for (String peer : peers) {
-            try {
-                String[] parts = peer.split(":");
+            System.out.println(
+                "\n=== Fluxo B: sincronização de estado com " + peer + " ==="
+            );
 
-                if (parts.length != 2) {
-                    System.out.println("Endereço de par inválido: " + peer);
+            try (PeerConnection connection =
+                    PeerConnection.open(peer, NodeNetwork.getNodeId())) {
+
+                NetworkMessage response = connection.request(
+                    new NetworkMessage(MessageType.GET_BLOCKCHAIN)
+                );
+
+                if (response.getType() != MessageType.BLOCKCHAIN_COPY) {
+                    System.out.println(
+                        "Fluxo B: resposta inesperada de " + peer + ": "
+                        + response.getType()
+                    );
                     continue;
                 }
 
-                String host = parts[0].trim();
-                int peerPort = Integer.parseInt(parts[1].trim());
+                ArrayList<Block> received = response.getPayloadAsBlockchain();
+                NoobChain.AdoptResult result = NoobChain.tryAdopt(received);
 
-                if (peerPort == ownPort
-                        && ("localhost".equals(host)
-                        || "127.0.0.1".equals(host))) {
-                    continue;
+                if (result == NoobChain.AdoptResult.ADOPTED) {
+                    System.out.println(
+                        "Fluxo B: cadeia de " + peer + " adotada ("
+                        + NoobChain.size() + " blocos)."
+                    );
+                    connection.send(new NetworkMessage(
+                        MessageType.ACK, result.getReason()
+                    ));
+                } else {
+                    System.out.println(
+                        "Fluxo B: cadeia de " + peer + " descartada ("
+                        + result.getReason() + ") Local: "
+                        + NoobChain.size() + " blocos; recebida: "
+                        + (received == null ? 0 : received.size()) + " blocos."
+                    );
+                    connection.send(new NetworkMessage(
+                        MessageType.REJECT, result.getReason()
+                    ));
                 }
 
-                System.out.println("A solicitar blockchain a " + peer);
-
-                try (
-                    Socket socket = new Socket(host, peerPort);
-                    ObjectOutputStream out =
-                        new ObjectOutputStream(socket.getOutputStream())
-                ) {
-                    socket.setSoTimeout(5000);
-                    out.flush();
-
-                    try (ObjectInputStream in =
-                            new ObjectInputStream(socket.getInputStream())) {
-
-                        out.writeObject(new Message("GET_BLOCKCHAIN"));
-                        out.flush();
-
-                        Object obj = in.readObject();
-
-                        if (!(obj instanceof Message)) {
-                            System.out.println("Resposta inválida de " + peer);
-                            continue;
-                        }
-
-                        Message response = (Message) obj;
-
-                        if ("REJECT".equals(response.getType())) {
-                            System.out.println(
-                                "Pedido rejeitado por " + peer + ": "
-                                + response.getData()
-                            );
-                            continue;
-                        }
-
-                        if (!"BLOCKCHAIN_COPY".equals(response.getType())) {
-                            System.out.println("Resposta inesperada de " + peer);
-                            continue;
-                        }
-
-                        ArrayList<Block> received = response.getBlockchain();
-
-                        if (!NoobChain.isChainValid(received)) {
-                            System.out.println(
-                                "Blockchain inválida recebida de " + peer
-                            );
-                            continue;
-                        }
-
-                        if (NoobChain.adoptBlockchain(received)) {
-                            System.out.println(
-                                "Blockchain de " + peer + " adotada com sucesso."
-                            );
-                        } else {
-                            System.out.println(
-                                "Cadeia de " + peer
-                                + " não adotada. Tamanho local: "
-                                + NoobChain.blockchain.size()
-                                + "; tamanho recebido: "
-                                + (received == null ? 0 : received.size())
-                            );
-                        }
-                    }
-                }
             } catch (Exception e) {
                 System.out.println(
-                    "Erro ao sincronizar com " + peer + ": " + e.getMessage()
+                    "Fluxo B: erro ao sincronizar com " + peer + ": "
+                    + e.getMessage()
                 );
             }
         }
     }
 
+    /**
+     * Fluxo C: envia a cadeia local (com o bloco recém-minerado) a todos
+     * os peers conhecidos.
+     */
     public static void broadcastBlockchain() {
+        ArrayList<Block> copy = NoobChain.getBlockchain();
         ArrayList<String> peers = NodeNetwork.getPeers();
 
+        System.out.println(
+            "\n=== Fluxo C: anúncio do novo bloco para " + peers.size()
+            + " peer(s) (" + copy.size() + " blocos) ==="
+        );
+
         for (String peer : peers) {
-            try {
-                String[] parts = peer.split(":");
+            if (NodeNetwork.isSelf(peer)) {
+                continue;
+            }
 
-                if (parts.length != 2) {
-                    System.out.println("Endereço inválido: " + peer);
-                    continue;
-                }
+            try (PeerConnection connection =
+                    PeerConnection.open(peer, NodeNetwork.getNodeId())) {
 
-                String host = parts[0].trim();
-                int peerPort = Integer.parseInt(parts[1].trim());
-                ArrayList<Block> copy = new ArrayList<>(NoobChain.blockchain);
-
-                System.out.println(
-                    "Enviando blockchain para " + peer
-                    + " (" + copy.size() + " blocos)..."
+                connection.request(
+                    new NetworkMessage(MessageType.BLOCKCHAIN_COPY, copy)
                 );
 
-                try (Socket socket = new Socket(host, peerPort)) {
-                    socket.setSoTimeout(5000);
-
-                    try (
-                        ObjectOutputStream out =
-                            new ObjectOutputStream(socket.getOutputStream());
-                        ObjectInputStream in =
-                            new ObjectInputStream(socket.getInputStream())
-                    ) {
-                        out.flush();
-                        out.writeObject(new Message("BLOCKCHAIN_COPY", copy));
-                        out.flush();
-
-                        Object responseObject = in.readObject();
-
-                        if (responseObject instanceof Message) {
-                            Message response = (Message) responseObject;
-
-                            if ("REJECT".equals(response.getType())) {
-                                System.out.println(
-                                    "Blockchain rejeitada por " + peer + ": "
-                                    + response.getData()
-                                );
-                            } else {
-                                System.out.println(
-                                    "Resposta de " + peer + ": "
-                                    + response.getType()
-                                );
-                            }
-                        } else {
-                            System.out.println(
-                                "Resposta inesperada de " + peer
-                            );
-                        }
-                    }
-                }
             } catch (Exception e) {
                 System.out.println(
-                    "Erro ao enviar blockchain para "
+                    "Fluxo C: erro ao enviar blockchain para "
                     + peer + ": " + e.getMessage()
                 );
             }
         }
-    }
-    
-    private static String[] parsePeerAddress(String address) {
-        String[] parts = address.split(":");
 
-        if (parts.length != 2) {
-            throw new IllegalArgumentException(
-                "Endereço de par inválido: " + address
-            );
-        }
-
-        return new String[] {
-            parts[0].trim(),
-            parts[1].trim()
-        };
+        System.out.println("Fluxo C concluído.");
     }
 
-    private static void registerWithSeed(
-            int ownPort, String seedAddress) {
+    // ------------------------------------------------------------------
+    // Console local (comandos que não fazem parte do protocolo)
+    // ------------------------------------------------------------------
 
-        try {
-            String[] seedParts = parsePeerAddress(seedAddress);
-            String seedHost = seedParts[0];
-            int seedPort = Integer.parseInt(seedParts[1]);
+    private static void runConsole() {
+        printHelp();
 
-            try (Socket socket = new Socket(seedHost, seedPort)) {
-                socket.setSoTimeout(5000);
+        BufferedReader reader =
+            new BufferedReader(new InputStreamReader(System.in));
 
-                String ownHost = socket.getLocalAddress().getHostAddress();
-                String ownAddress = ownHost + ":" + ownPort;
+        while (true) {
+            String line;
 
-                ArrayList<String> registration = new ArrayList<>();
-                registration.add(ownAddress);
+            try {
+                line = reader.readLine();
+            } catch (IOException e) {
+                return;
+            }
 
-                try (
-                    ObjectOutputStream out =
-                        new ObjectOutputStream(socket.getOutputStream())
-                ) {
-                    out.flush();
+            if (line == null) {
+                return; // Sem console disponível.
+            }
 
-                    try (
-                        ObjectInputStream in =
-                            new ObjectInputStream(socket.getInputStream())
-                    ) {
-                        out.writeObject(
-                            new Message("PEERS_LIST", registration, true)
-                        );
-                        out.flush();
+            line = line.trim();
 
-                        Object response = in.readObject();
+            if (line.isEmpty()) {
+                continue;
+            }
 
-                        if (response instanceof Message
-                                && "PEERS_LIST_RECEIVED".equals(
-                                    ((Message) response).getType())) {
+            String[] parts = line.split("\\s+", 2);
+            String command = parts[0].toLowerCase();
+            String argument = parts.length > 1 ? parts[1] : "";
 
-                            System.out.println(
-                                "Registo confirmado pelo seed: " + ownAddress
-                            );
-                        } else {
-                            System.out.println(
-                                "Resposta inesperada ao registo no seed."
-                            );
-                            return;
-                        }
+            switch (command) {
+                case "minerar":
+                case "mine":
+                    if (argument.isEmpty()) {
+                        System.out.println("Uso: minerar <dados do bloco>");
+                    } else if (NoobChain.mineNewBlock(argument)) {
+                        broadcastBlockchain();
                     }
-                }
-            }
+                    break;
 
-            refreshPeersFromSeed(ownPort, seedAddress);
+                case "cadeia":
+                case "chain":
+                    printChain();
+                    break;
 
-        } catch (Exception e) {
-            System.out.println(
-                "Erro ao registar no seed: " + e.getMessage()
-            );
-        }
-    }
-
-    private static void refreshPeersFromSeed(
-            int ownPort, String seedAddress) {
-
-        try {
-            String[] seedParts = parsePeerAddress(seedAddress);
-            String seedHost = seedParts[0];
-            int seedPort = Integer.parseInt(seedParts[1]);
-
-            try (Socket socket = new Socket(seedHost, seedPort)) {
-                socket.setSoTimeout(5000);
-
-                String ownHost = socket.getLocalAddress().getHostAddress();
-                String ownAddress = ownHost + ":" + ownPort;
-
-                try (
-                    ObjectOutputStream out =
-                        new ObjectOutputStream(socket.getOutputStream())
-                ) {
-                    out.flush();
-
-                    try (
-                        ObjectInputStream in =
-                            new ObjectInputStream(socket.getInputStream())
-                    ) {
-                        out.writeObject(new Message("GET_PEERS"));
-                        out.flush();
-
-                        Object response = in.readObject();
-
-                        if (!(response instanceof Message)) {
-                            System.out.println(
-                                "Resposta inválida ao consultar o seed."
-                            );
-                            return;
-                        }
-
-                        Message message = (Message) response;
-
-                        if (!"PEERS_LIST".equals(message.getType())) {
-                            System.out.println(
-                                "Resposta inesperada do seed: "
-                                + message.getType()
-                            );
-                            return;
-                        }
-
-                        ArrayList<String> peers = message.getPeers();
-                        
-                        java.util.Set<String> paresAntes =
-                        		new java.util.HashSet<>(NodeNetwork.getPeers());
-                        
-                        if (peers != null) {
-                            for (String peer : peers) {
-                                if (peer == null || peer.equals(ownAddress)) {
-                                    continue;
-                                }
-
-                                NodeNetwork.addPeer(peer);
-                            }
-                        }
-
-
-						java.util.Set<String> paresDepois =
-						    new java.util.HashSet<>(NodeNetwork.getPeers());
-						
-						if (!paresAntes.equals(paresDepois)) {
-						    System.out.println(
-						        "Lista de pares alterada. Total local: "
-						        + paresDepois.size()
-						    );
-						}
-;
+                case "peers":
+                    ArrayList<String> peers = NodeNetwork.getPeers();
+                    System.out.println("Pares conhecidos (" + peers.size() + "):");
+                    for (String peer : peers) {
+                        System.out.println("- " + peer);
                     }
-                }
-            }
+                    break;
 
-        } catch (Exception e) {
+                case "sync":
+                    synchronizeWithPeers();
+                    break;
+
+                case "ajuda":
+                case "help":
+                    printHelp();
+                    break;
+
+                case "sair":
+                case "exit":
+                    System.out.println("Encerrando o nó.");
+                    System.exit(0);
+                    break;
+
+                default:
+                    System.out.println(
+                        "Comando desconhecido: " + command
+                        + " (digite \"ajuda\")"
+                    );
+            }
+        }
+    }
+
+    private static void printChain() {
+        ArrayList<Block> chain = NoobChain.getBlockchain();
+
+        System.out.println(
+            "Blockchain local: " + chain.size() + " blocos"
+            + " | válida: " + NoobChain.isChainValid(chain)
+        );
+
+        for (int i = 0; i < chain.size(); i++) {
+            Block block = chain.get(i);
             System.out.println(
-                "Erro ao atualizar lista de pares: " + e.getMessage()
+                "Bloco " + i
+                + " | Hash: " + block.hash
+                + " | Previous hash: " + block.previousHash
             );
         }
     }
 
-    private static void startPeerRefreshThread(
-            int ownPort, String seedAddress) {
-
-        Thread refreshThread = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(5000);
-                    refreshPeersFromSeed(ownPort, seedAddress);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-        });
-
-        refreshThread.setDaemon(true);
-        refreshThread.start();
+    private static void printHelp() {
+        System.out.println(
+            "\nComandos: minerar <dados> | cadeia | peers | sync | ajuda | sair\n"
+        );
     }
 }

@@ -1,11 +1,12 @@
 
 package blockchain;
 
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
 import java.util.ArrayList;
 
+/**
+ * Envia a um nó uma cadeia adulterada e espera REJECT.
+ * Uso: InvalidBlockchainTest [host] [porta]
+ */
 public class InvalidBlockchainTest {
     public static void main(String[] args) {
         String host = args.length > 0 ? args[0] : "localhost";
@@ -35,36 +36,24 @@ public class InvalidBlockchainTest {
                     "Cadeia de teste válida? "
                     + NoobChain.isChainValid(invalidChain));
 
-            try (Socket socket = new Socket(host, port);
-                 ObjectOutputStream out =
-                         new ObjectOutputStream(socket.getOutputStream())) {
+            try (PeerConnection connection = PeerConnection.open(
+                    host + ":" + port, "InvalidBlockchainTest")) {
 
-                out.flush();
+                NetworkMessage message = connection.request(
+                        new NetworkMessage(
+                                MessageType.BLOCKCHAIN_COPY, invalidChain));
 
-                ObjectInputStream in =
-                        new ObjectInputStream(socket.getInputStream());
+                System.out.println(
+                        "Tipo de resposta: " + message.getType());
+                System.out.println(
+                        "Detalhe: " + message.getPayloadAsString());
 
-                out.writeObject(
-                        new Message("BLOCKCHAIN_COPY", invalidChain));
-                out.flush();
-
-                Object response = in.readObject();
-
-                if (response instanceof Message) {
-                    Message message = (Message) response;
-
+                if (message.getType() == MessageType.REJECT) {
                     System.out.println(
-                            "Tipo de resposta: " + message.getType());
+                            "TESTE PASSOU: cadeia inválida rejeitada.");
+                } else {
                     System.out.println(
-                            "Detalhe: " + message.getData());
-
-                    if ("REJECT".equals(message.getType())) {
-                        System.out.println(
-                                "TESTE PASSOU: cadeia inválida rejeitada.");
-                    } else {
-                        System.out.println(
-                                "TESTE FALHOU: resposta inesperada.");
-                    }
+                            "TESTE FALHOU: resposta inesperada.");
                 }
             }
         } catch (Exception e) {

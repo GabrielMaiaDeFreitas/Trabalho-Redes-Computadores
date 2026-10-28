@@ -4,6 +4,10 @@ import java.io.Serializable;
 import java.util.Date;
 
 public class Block implements Serializable {
+
+	// Versão fixa da classe para que nós compilados em máquinas diferentes
+	// consigam desserializar os blocos recebidos pela rede.
+	private static final long serialVersionUID = 1L;
 	
 	public String hash;
 	public String previousHash;

@@ -1,0 +1,85 @@
+{
+    // Use o IntelliSense para saber mais sobre os atributos possíveis.
+    // Focalizar para exibir as descrições dos atributos existentes.
+    // Para obter mais informações, acesse: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+
+        {
+            "type": "java",
+            "name": "Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "AdoptionTest",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.AdoptionTest",
+            "projectName": "blockchain"
+        },
+        {
+            "type": "java",
+            "name": "BlockchainTest",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.BlockchainTest",
+            "projectName": "blockchain"
+        },
+        {
+            "type": "java",
+            "name": "InvalidBlockchainTest",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.InvalidBlockchainTest",
+            "projectName": "blockchain"
+        },
+        {
+            "type": "java",
+            "name": "NodeClient",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.NodeClient",
+            "projectName": "blockchain"
+        },
+        
+        {
+            "type": "java",
+            "name": "NodeServer - Seed (5000)",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.NodeServer",
+            "projectName": "blockchain",
+            "args": "5000 SEED"
+        },
+
+
+        {
+            "type": "java",
+            "name": "NodeServer - Nó A (5001)",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.NodeServer",
+            "projectName": "blockchain",
+            "args": "5001 10.206.228.68:5000"
+        },
+
+        {
+            "type": "java",
+            "name": "NoobChain",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.NoobChain",
+            "projectName": "blockchain"
+        },
+        {
+            "type": "java",
+            "name": "RejectTest",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.RejectTest",
+            "projectName": "blockchain"
+        },
+        {
+            "type": "java",
+            "name": "ShortBlockchainTest",
+            "request": "launch",
+            "mainClass": "blockchain/blockchain.ShortBlockchainTest",
+            "projectName": "blockchain"
+        }
+    ]
+}

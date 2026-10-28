@@ -8,8 +8,7 @@ public class AdoptionTest {
     public static void main(String[] args) {
 
         // Guarda a blockchain atual para restaurá-la no final.
-        ArrayList<Block> blockchainOriginal =
-                new ArrayList<>(NoobChain.blockchain);
+        ArrayList<Block> blockchainOriginal = NoobChain.getBlockchain();
 
         try {
             // Cria uma blockchain local de teste com 2 blocos.
@@ -23,10 +22,10 @@ public class AdoptionTest {
             bloco1.mineBlock(NoobChain.difficulty);
             local.add(bloco1);
 
-            NoobChain.blockchain = new ArrayList<>(local);
+            NoobChain.setBlockchain(local);
 
             System.out.println("Blockchain local: "
-                    + NoobChain.blockchain.size() + " blocos.");
+                    + NoobChain.size() + " blocos.");
 
             // TESTE 1: cadeia válida, mas do mesmo tamanho.
             ArrayList<Block> mesmaTamanho =
@@ -56,24 +55,26 @@ public class AdoptionTest {
                     + resultado2
             );
 
-            // TESTE 3: cadeia adulterada.
+            // TESTE 3: cadeia adulterada (e maior que a local).
             ArrayList<Block> adulterada =
                     new ArrayList<>(maior);
 
-            adulterada.get(1).previousHash = "hash_invalido";
+            Block bloco3 = new Block("Bloco 3", bloco2.hash);
+            bloco3.mineBlock(NoobChain.difficulty);
+            adulterada.add(bloco3);
+            bloco3.previousHash = "hash_invalido";
 
-            boolean resultado3 =
-                    NoobChain.adoptBlockchain(adulterada);
+            NoobChain.AdoptResult resultado3 =
+                    NoobChain.tryAdopt(adulterada);
 
             System.out.println(
                     "Teste 3 - Cadeia inválida rejeitada: "
-                    + !resultado3
+                    + (resultado3 == NoobChain.AdoptResult.INVALID)
             );
 
         } finally {
-            // Restaura a referência original da blockchain.
-            NoobChain.blockchain =
-                    new ArrayList<>(blockchainOriginal);
+            // Restaura a blockchain original.
+            NoobChain.setBlockchain(blockchainOriginal);
         }
     }
 }

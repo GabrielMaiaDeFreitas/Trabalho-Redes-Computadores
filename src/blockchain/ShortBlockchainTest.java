@@ -1,11 +1,13 @@
 
 package blockchain;
 
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
 import java.util.ArrayList;
 
+/**
+ * Envia a um nó uma cadeia válida, mas não maior que a dele, e espera
+ * REJECT pela regra de tamanho.
+ * Uso: ShortBlockchainTest [host] [porta]
+ */
 public class ShortBlockchainTest {
 
     public static void main(String[] args) {
@@ -85,70 +87,46 @@ public class ShortBlockchainTest {
                 return;
             }
 
-            // Enviar a cadeia ao servidor.
-            try (Socket socket = new Socket(host, port);
-                 ObjectOutputStream out =
-                         new ObjectOutputStream(
-                                 socket.getOutputStream())) {
+            // Enviar a cadeia ao nó (com handshake).
+            try (PeerConnection connection = PeerConnection.open(
+                    host + ":" + port, "ShortBlockchainTest")) {
 
-                out.flush();
+                NetworkMessage message = connection.request(
+                        new NetworkMessage(
+                                MessageType.BLOCKCHAIN_COPY, testChain)
+                );
 
-                try (ObjectInputStream in =
-                             new ObjectInputStream(
-                                     socket.getInputStream())) {
+                System.out.println("\n--- Resposta do servidor ---");
+                System.out.println(
+                        "Tipo de resposta: " + message.getType()
+                );
+                System.out.println(
+                        "Detalhe: " + message.getPayloadAsString()
+                );
 
-                    out.writeObject(
-                            new Message("BLOCKCHAIN_COPY", testChain)
-                    );
-                    out.flush();
+                if (message.getType() == MessageType.REJECT) {
+                    String detail = message.getPayloadAsString();
 
-                    Object response = in.readObject();
+                    if (detail != null
+                            && detail.toLowerCase().contains(
+                                    "tamanho menor ou igual")) {
 
-                    if (!(response instanceof Message)) {
                         System.out.println(
-                                "TESTE FALHOU: resposta não reconhecida."
+                                "TESTE PASSOU: cadeia válida "
+                                + "rejeitada pela regra de tamanho."
                         );
-                        return;
-                    }
-
-                    Message message = (Message) response;
-
-                    System.out.println("\n--- Resposta do servidor ---");
-                    System.out.println(
-                            "Tipo de resposta: " + message.getType()
-                    );
-                    System.out.println(
-                            "Detalhe: " + message.getData()
-                    );
-
-                    if ("REJECT".equals(message.getType())) {
-                        String detail = message.getData();
-
-                        if (detail != null
-                                && (detail.toLowerCase().contains(
-                                        "tamanho menor ou igual")
-                                || detail.toLowerCase().contains(
-                                        "não é mais longa")
-                                || detail.toLowerCase().contains(
-                                        "mais longa"))) {
-
-                            System.out.println(
-                                    "TESTE PASSOU: cadeia válida "
-                                    + "rejeitada pela regra de tamanho."
-                            );
-
-                        } else {
-                            System.out.println(
-                                    "REJEIÇÃO RECEBIDA, mas o motivo "
-                                    + "precisa de confirmação."
-                            );
-                        }
 
                     } else {
                         System.out.println(
-                                "TESTE FALHOU: esperava-se REJECT."
+                                "REJEIÇÃO RECEBIDA, mas o motivo "
+                                + "precisa de confirmação."
                         );
                     }
+
+                } else {
+                    System.out.println(
+                            "TESTE FALHOU: esperava-se REJECT."
+                    );
                 }
             }
 

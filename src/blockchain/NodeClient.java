@@ -1,275 +1,153 @@
 package blockchain;
 
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
 import java.util.ArrayList;
 
+/**
+ * Cliente de linha de comando para inspecionar um nó.
+ *
+ * Uso: NodeClient [host] [porta] [ALL | BLOCKCHAIN | PEERS]
+ *
+ * Todas as operações usam uma única conexão, como no Fluxo A:
+ * HELLO -> ACK -> GET_BLOCKCHAIN -> BLOCKCHAIN_COPY -> GET_PEERS -> PEERS_LIST.
+ *
+ * Para minerar ou forçar sincronização, use os comandos do console do
+ * próprio nó (NodeServer): "minerar <dados>" e "sync".
+ */
 public class NodeClient {
 
     public static void main(String[] args) {
-        String host = "localhost";
-        int port = 5000;
-        String operation = "ALL";
-        String data = "Novo bloco";
+        String host = args.length > 0 ? args[0] : "localhost";
+        int port = args.length > 1
+            ? Integer.parseInt(args[1]) : NetworkConfig.SEED_PORT;
+        String operation = args.length > 2 ? args[2].toUpperCase() : "ALL";
 
-        if (args.length > 0) {
-            host = args[0];
-        }
-        if (args.length > 1) {
-            port = Integer.parseInt(args[1]);
-        }
-        if (args.length > 2) {
-            operation = args[2].toUpperCase();
-        }
-        if (args.length > 3) {
-            data = args[3];
-        }
-
-        // O handshake é feito antes das operações normais.
-        try {
-            Message helloResponse = sendRequest(
-                host,
-                port,
-                new Message("HELLO", "V1.0-Node-" + port)
-            );
-
-            if ("REJECT".equals(helloResponse.getType())) {
-                System.out.println(
-                    "Apresentação rejeitada: " + helloResponse.getData()
-                );
-                return;
-            }
-
-            if (!"HELLO".equals(helloResponse.getType())) {
-                System.out.println(
-                    "Resposta inesperada ao HELLO: "
-                    + helloResponse.getType()
-                );
-                return;
-            }
-
+        if (!"ALL".equals(operation)
+                && !"BLOCKCHAIN".equals(operation)
+                && !"PEERS".equals(operation)
+                && !"GET_PEERS".equals(operation)) {
             System.out.println(
-                "Apresentação confirmada: " + helloResponse.getData()
-            );
-        } catch (Exception e) {
-            System.out.println(
-                "Erro na apresentação ao nó: " + e.getMessage()
+                "Operação desconhecida: " + operation
+                + ". Use ALL, BLOCKCHAIN ou PEERS."
+                + " Para minerar, use \"minerar <dados>\" no console do nó."
             );
             return;
         }
 
-        if ("SYNC".equals(operation)) {
-            requestSync(host, port);
+        String address = host + ":" + port;
+
+        try (PeerConnection connection =
+                PeerConnection.open(address, "Client")) {
+
+            System.out.println(
+                "Handshake confirmado por " + connection.getRemoteNode()
+            );
+
+            if ("ALL".equals(operation) || "BLOCKCHAIN".equals(operation)) {
+                requestBlockchain(connection);
+            }
+
+            if (!"BLOCKCHAIN".equals(operation)) {
+                requestPeers(connection);
+            }
+
+        } catch (Exception e) {
+            System.out.println(
+                "Erro na comunicação com " + address + ": " + e.getMessage()
+            );
+        }
+    }
+
+    private static void requestBlockchain(PeerConnection connection)
+            throws Exception {
+
+        System.out.println(
+            "\nSolicitando blockchain a " + connection.getAddress()
+        );
+
+        NetworkMessage response = connection.request(
+            new NetworkMessage(MessageType.GET_BLOCKCHAIN)
+        );
+
+        if (response.getType() == MessageType.REJECT) {
+            System.out.println(
+                "Pedido de blockchain rejeitado: "
+                + response.getPayloadAsString()
+            );
             return;
         }
 
-        if ("MINE".equals(operation)) {
-            requestMine(host, port, data);
+        if (response.getType() != MessageType.BLOCKCHAIN_COPY) {
+            System.out.println("Resposta inesperada: " + response.getType());
             return;
         }
 
-        NoobChain.initializeBlockchain();
-        //NodeNetwork.addPeer(host + ":" + port);
+        ArrayList<Block> received = response.getPayloadAsBlockchain();
+        NoobChain.AdoptResult result = NoobChain.tryAdopt(received);
 
-        if ("ALL".equals(operation) || "BLOCKCHAIN".equals(operation)) {
-            requestBlockchain(host, port);
+        System.out.println("Resultado da validação: " + result.getReason());
+
+        // Fluxo B: confirma com ACK ou devolve REJECT com o motivo.
+        if (result == NoobChain.AdoptResult.ADOPTED) {
+            connection.send(new NetworkMessage(
+                MessageType.ACK, result.getReason()
+            ));
+        } else {
+            connection.send(new NetworkMessage(
+                MessageType.REJECT, result.getReason()
+            ));
         }
 
-        if ("ALL".equals(operation)
-                || "PEERS".equals(operation)
-                || "GET_PEERS".equals(operation)) {
-            requestPeers(host, port);
-        }
-    }
+        if (received != null) {
+            System.out.println("Recebidos " + received.size() + " blocos.");
 
-    private static Message sendRequest(
-            String host, int port, Message request) throws Exception {
-        try (
-            Socket socket = new Socket(host, port);
-            ObjectOutputStream out =
-                new ObjectOutputStream(socket.getOutputStream())
-        ) {
-            socket.setSoTimeout(5000);
-            out.flush();
-
-            try (ObjectInputStream in =
-                    new ObjectInputStream(socket.getInputStream())) {
-                out.writeObject(request);
-                out.flush();
-
-                Object response = in.readObject();
-                if (!(response instanceof Message)) {
-                    throw new IllegalStateException(
-                        "O servidor respondeu com um objeto inesperado."
-                    );
-                }
-                return (Message) response;
+            for (int i = 0; i < received.size(); i++) {
+                Block block = received.get(i);
+                System.out.println(
+                    "Bloco " + i
+                    + " | Hash: " + block.hash
+                    + " | Previous hash: " + block.previousHash
+                );
             }
         }
     }
 
-    private static boolean reportReject(Message response, String operation) {
-        if ("REJECT".equals(response.getType())) {
+    private static void requestPeers(PeerConnection connection)
+            throws Exception {
+
+        System.out.println("\nSolicitando lista de pares...");
+
+        NetworkMessage response = connection.request(
+            new NetworkMessage(MessageType.GET_PEERS)
+        );
+
+        if (response.getType() == MessageType.REJECT) {
             System.out.println(
-                operation + " rejeitado: " + response.getData()
+                "Pedido de peers rejeitado: " + response.getPayloadAsString()
             );
-            return true;
+            return;
         }
-        return false;
-    }
 
-    private static void requestMine(
-            String host, int port, String data) {
-        try {
-            System.out.println(
-                "\nA solicitar mineração ao nó " + host + ":" + port
-            );
-
-            Message response = sendRequest(
-                host, port, new Message("MINE", data)
-            );
-
-            if (reportReject(response, "Pedido de mineração")) {
-                return;
-            }
-
-            if ("MINE_COMPLETE".equals(response.getType())) {
-                System.out.println(
-                    "O servidor concluiu o pedido de mineração."
-                );
-            } else {
-                System.out.println(
-                    "Resposta inesperada: " + response.getType()
-                );
-            }
-        } catch (Exception e) {
-            System.out.println(
-                "Erro ao solicitar mineração: " + e.getMessage()
-            );
+        if (response.getType() != MessageType.PEERS_LIST) {
+            System.out.println("Resposta inesperada: " + response.getType());
+            return;
         }
-    }
 
-    private static void requestBlockchain(String host, int port) {
-        try {
-            System.out.println(
-                "\nA solicitar blockchain a " + host + ":" + port
-            );
+        ArrayList<String> receivedPeers = response.getPayloadAsPeers();
 
-            Message response = sendRequest(
-                host, port, new Message("GET_BLOCKCHAIN")
-            );
-
-            if (reportReject(response, "Pedido de blockchain")) {
-                return;
-            }
-
-            if (!"BLOCKCHAIN_COPY".equals(response.getType())) {
-                System.out.println(
-                    "Resposta inesperada: " + response.getType()
-                );
-                return;
-            }
-
-            ArrayList<Block> received = response.getBlockchain();
-            boolean valid = NoobChain.isChainValid(received);
-
-            System.out.println("Blockchain recebida é válida: " + valid);
-
-            if (valid) {
-                boolean adopted = NoobChain.adoptBlockchain(received);
-                System.out.println("Cadeia adotada: " + adopted);
-            }
-
-            if (received != null) {
-                System.out.println("Recebidos " + received.size() + " blocos.");
-
-                for (int i = 0; i < received.size(); i++) {
-                    Block block = received.get(i);
-                    System.out.println(
-                        "Bloco " + i
-                        + " | Hash: " + block.hash
-                        + " | Previous hash: " + block.previousHash
-                    );
-                }
-            }
-        } catch (Exception e) {
-            System.out.println(
-                "Erro ao solicitar blockchain: " + e.getMessage()
-            );
+        if (receivedPeers == null) {
+            System.out.println("Lista de peers inválida.");
+            return;
         }
-    }
 
-    private static void requestPeers(String host, int port) {
-        try {
-            System.out.println("\nA solicitar lista de pares...");
-
-            Message response = sendRequest(
-                host, port, new Message("GET_PEERS")
-            );
-
-            if (reportReject(response, "Pedido de peers")) {
-                return;
-            }
-
-            if (!"PEERS_LIST".equals(response.getType())) {
-                System.out.println(
-                    "Resposta inesperada: " + response.getType()
-                );
-                return;
-            }
-
-            ArrayList<String> receivedPeers = response.getPeers();
-
-            if (receivedPeers != null) {
-                for (String peer : receivedPeers) {
-                    NodeNetwork.addPeer(peer);
-                }
-            }
-
-            System.out.println(
-                "Pares recebidos: "
-                + (receivedPeers == null ? 0 : receivedPeers.size())
-            );
-
-            System.out.println("Pares conhecidos pelo cliente:");
-            for (String peer : NodeNetwork.getPeers()) {
-                System.out.println("- " + peer);
-            }
-        } catch (Exception e) {
-            System.out.println(
-                "Erro ao solicitar pares: " + e.getMessage()
-            );
+        for (String peer : receivedPeers) {
+            NodeNetwork.addPeer(peer);
         }
-    }
 
-    private static void requestSync(String host, int port) {
-        try {
-            System.out.println(
-                "\nA solicitar sincronização ao nó " + host + ":" + port
-            );
+        System.out.println("Pares recebidos: " + receivedPeers.size());
+        System.out.println("Pares conhecidos pelo cliente:");
 
-            Message response = sendRequest(
-                host, port, new Message("SYNC")
-            );
-
-            if (reportReject(response, "Pedido de sincronização")) {
-                return;
-            }
-
-            if ("SYNC_COMPLETE".equals(response.getType())) {
-                System.out.println(
-                    "Pedido de sincronização concluído pelo servidor."
-                );
-            } else {
-                System.out.println(
-                    "Resposta inesperada: " + response.getType()
-                );
-            }
-        } catch (Exception e) {
-            System.out.println(
-                "Erro ao solicitar sincronização: " + e.getMessage()
-            );
+        for (String peer : NodeNetwork.getPeers()) {
+            System.out.println("- " + peer);
         }
     }
 }
