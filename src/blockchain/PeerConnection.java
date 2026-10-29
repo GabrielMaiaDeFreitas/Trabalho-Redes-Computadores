@@ -28,6 +28,7 @@ public class PeerConnection implements Closeable {
     private final ObjectOutputStream out;
     private final ObjectInputStream in;
     private String remoteNode;
+    private boolean handshakeDone = false;
 
     private PeerConnection(String address, Socket socket) throws IOException {
         this.address = address;
@@ -38,11 +39,28 @@ public class PeerConnection implements Closeable {
     }
 
     /**
-     * Conecta a "host:porta" e faz o handshake.
+     * Conecta a "host:porta" e faz o handshake (conexão TCP + HELLO/ACK).
      * Lança IOException se a conexão falhar ou o HELLO for rejeitado.
      */
     public static PeerConnection open(String address, String nodeId)
             throws IOException {
+
+        PeerConnection connection = connect(address);
+
+        try {
+            connection.hello(nodeId);
+            return connection;
+        } catch (IOException e) {
+            connection.close();
+            throw e;
+        }
+    }
+
+    /**
+     * Apenas abre a conexão TCP com "host:porta", sem enviar HELLO
+     * (Fluxo A, passo 1).
+     */
+    public static PeerConnection connect(String address) throws IOException {
 
         String[] parts = NodeNetwork.parseAddress(address);
         String host = parts[0];
@@ -58,7 +76,6 @@ public class PeerConnection implements Closeable {
             socket.setSoTimeout(READ_TIMEOUT_MS);
 
             connection = new PeerConnection(address, socket);
-            connection.handshake(nodeId);
             return connection;
 
         } catch (IOException e) {
@@ -71,7 +88,11 @@ public class PeerConnection implements Closeable {
         }
     }
 
-    private void handshake(String nodeId) throws IOException {
+    /**
+     * Envia HELLO "V1.0-<id>" e espera o ACK (Fluxo A, passos 2 e 3).
+     * Lança IOException se o peer responder outra coisa.
+     */
+    public void hello(String nodeId) throws IOException {
         NetworkMessage response = request(new NetworkMessage(
             MessageType.HELLO, PROTOCOL_VERSION + "-" + nodeId
         ));
@@ -84,6 +105,15 @@ public class PeerConnection implements Closeable {
         }
 
         remoteNode = response.getPayloadAsString();
+        handshakeDone = true;
+    }
+
+    public boolean isHandshakeDone() {
+        return handshakeDone;
+    }
+
+    public int getLocalPort() {
+        return socket.getLocalPort();
     }
 
     /**

@@ -11,7 +11,7 @@ import java.util.ArrayList;
  * HELLO -> ACK -> GET_BLOCKCHAIN -> BLOCKCHAIN_COPY -> GET_PEERS -> PEERS_LIST.
  *
  * Para minerar ou forçar sincronização, use os comandos do console do
- * próprio nó (NodeServer): "minerar <dados>" e "sync".
+ * próprio nó (NodeServer): "minerar <dados>", "broadcast", "get_blockchain".
  */
 public class NodeClient {
 
