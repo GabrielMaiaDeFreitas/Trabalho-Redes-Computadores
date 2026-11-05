@@ -1,13 +1,14 @@
 
-package blockchain;
+package blockchain.test;
 
 import java.util.ArrayList;
 
-/**
- * Envia a um nó uma cadeia válida, mas não maior que a dele, e espera
- * REJECT pela regra de tamanho.
- * Uso: ShortBlockchainTest [host] [porta]
- */
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
+import blockchain.network.MessageType;
+import blockchain.network.NetworkMessage;
+import blockchain.network.PeerConnection;
+
 public class ShortBlockchainTest {
 
     public static void main(String[] args) {
@@ -17,7 +18,6 @@ public class ShortBlockchainTest {
                 ? Integer.parseInt(args[1]) : 5000;
 
         try {
-            // Criar uma cadeia de teste válida com quatro blocos.
             ArrayList<Block> testChain = new ArrayList<>();
 
             Block previous = new Block("Bloco de teste 0", "0");
@@ -35,7 +35,6 @@ public class ShortBlockchainTest {
                 previous = next;
             }
 
-            // Diagnóstico da cadeia.
             System.out.println("\n--- Diagnóstico da cadeia ---");
             System.out.println(
                     "Dificuldade configurada: " + NoobChain.difficulty
@@ -79,7 +78,6 @@ public class ShortBlockchainTest {
                 }
             }
 
-            // Não enviar a cadeia se for inválida.
             if (!NoobChain.isChainValid(testChain)) {
                 System.out.println(
                         "TESTE INTERROMPIDO: cadeia inválida."
@@ -87,7 +85,6 @@ public class ShortBlockchainTest {
                 return;
             }
 
-            // Enviar a cadeia ao nó (com handshake).
             try (PeerConnection connection = PeerConnection.open(
                     host + ":" + port, "ShortBlockchainTest")) {
 

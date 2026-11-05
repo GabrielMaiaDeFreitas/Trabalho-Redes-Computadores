@@ -1,17 +1,14 @@
 
-package blockchain;
+package blockchain.test;
 
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
 
-/**
- * Verifica as rejeições do handshake:
- *   1. Mensagem enviada antes do HELLO -> REJECT.
- *   2. HELLO com versão de protocolo errada -> REJECT.
- *   3. HELLO correto -> ACK.
- * Uso: RejectTest [host] [porta]
- */
+import blockchain.network.MessageType;
+import blockchain.network.NetworkMessage;
+import blockchain.network.PeerConnection;
+
 public class RejectTest {
 
     public static void main(String[] args) {
@@ -36,7 +33,6 @@ public class RejectTest {
                 MessageType.ACK);
     }
 
-    // Envia uma única mensagem numa conexão nova e confere o tipo da resposta.
     private static void check(String host, int port, String name,
             NetworkMessage request, MessageType expected) {
 

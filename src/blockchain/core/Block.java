@@ -1,12 +1,10 @@
-package blockchain;
+package blockchain.core;
 
 import java.io.Serializable;
 import java.util.Date;
 
 public class Block implements Serializable {
 
-	// Versão fixa da classe para que nós compilados em máquinas diferentes
-	// consigam desserializar os blocos recebidos pela rede.
 	private static final long serialVersionUID = 1L;
 	
 	public String hash;
@@ -34,7 +32,7 @@ public class Block implements Serializable {
 	}
 	
 	public void mineBlock(int difficulty) {
-		String target = new String(new char[difficulty]).replace('\0', '0'); //Create a string with 
+		String target = new String(new char[difficulty]).replace('\0', '0');
 		while(!hash.substring( 0, difficulty).equals(target)) {
 			nonce ++;
 			hash = calculateHash();
@@ -43,5 +41,3 @@ public class Block implements Serializable {
 	}
 	
 }
-
-

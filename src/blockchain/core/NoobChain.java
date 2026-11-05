@@ -1,19 +1,11 @@
 
-package blockchain;
+package blockchain.core;
 
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Blockchain local do nó.
- *
- * A cadeia é acessada por várias threads (uma por conexão, a thread de
- * sincronização e o console), por isso todo acesso passa por métodos
- * sincronizados em NoobChain.class e quem está fora recebe apenas cópias.
- */
 public class NoobChain {
 
-    // Resultado da tentativa de adotar uma cadeia recebida.
     public enum AdoptResult {
         ADOPTED("Cadeia adotada."),
         INVALID("Cadeia inválida."),
@@ -30,10 +22,8 @@ public class NoobChain {
         }
     }
 
-    // Lista que armazena a blockchain (acesso apenas pelos métodos abaixo).
     private static ArrayList<Block> blockchain = new ArrayList<>();
 
-    // Número de zeros exigidos no início do hash.
     public static int difficulty = 3;
 
     public static void main(String[] args) {
@@ -44,7 +34,6 @@ public class NoobChain {
         );
     }
 
-    // Cria a blockchain inicial com três blocos.
     public static synchronized void initializeBlockchain() {
         blockchain.clear();
 
@@ -74,7 +63,6 @@ public class NoobChain {
         );
     }
 
-    // Devolve uma cópia da cadeia local (segura para enviar pela rede).
     public static synchronized ArrayList<Block> getBlockchain() {
         return new ArrayList<>(blockchain);
     }
@@ -83,7 +71,6 @@ public class NoobChain {
         return blockchain.size();
     }
 
-    // Substitui a cadeia local sem validar (usado pelos testes).
     public static synchronized void setBlockchain(List<Block> chain) {
         blockchain = new ArrayList<>(chain);
     }
@@ -92,12 +79,10 @@ public class NoobChain {
         blockchain.clear();
     }
 
-    // Valida a blockchain local.
     public static synchronized Boolean isChainValid() {
         return isChainValid(blockchain);
     }
 
-    // Valida uma cadeia recebida ou a cadeia local.
     public static boolean isChainValid(List<Block> chain) {
 
         if (chain == null || chain.isEmpty()) {
@@ -116,27 +101,23 @@ public class NoobChain {
 
             Block currentBlock = chain.get(i);
 
-            // Confere se o bloco e os hashes existem.
             if (currentBlock == null
                     || currentBlock.hash == null
                     || currentBlock.previousHash == null) {
                 return false;
             }
 
-            // Confere se o hash corresponde aos dados do bloco.
             String calculatedHash = currentBlock.calculateHash();
 
             if (!currentBlock.hash.equals(calculatedHash)) {
                 return false;
             }
 
-            // Confere a prova de trabalho de todos os blocos.
             if (!currentBlock.hash.startsWith(target)) {
                 return false;
             }
 
             if (i == 0) {
-                // O bloco inicial deve apontar para "0".
                 if (!"0".equals(currentBlock.previousHash)) {
                     return false;
                 }
@@ -148,7 +129,6 @@ public class NoobChain {
                     return false;
                 }
 
-                // Confere a ligação com o bloco anterior.
                 if (!currentBlock.previousHash.equals(
                         previousBlock.hash)) {
                     return false;
@@ -159,12 +139,6 @@ public class NoobChain {
         return true;
     }
 
-    /**
-     * Regra de consenso (Fluxo B): adota a cadeia recebida apenas se ela
-     * for válida E maior que a local. A verificação e a troca acontecem
-     * sob o mesmo lock, então duas threads não conseguem adotar cadeias
-     * ao mesmo tempo.
-     */
     public static synchronized AdoptResult tryAdopt(List<Block> received) {
 
         if (received == null || !isChainValid(received)) {
@@ -180,7 +154,6 @@ public class NoobChain {
             return AdoptResult.NOT_LONGER;
         }
 
-        // Cria uma cópia da lista recebida.
         blockchain = new ArrayList<>(received);
 
         System.out.println(
@@ -191,19 +164,10 @@ public class NoobChain {
         return AdoptResult.ADOPTED;
     }
 
-    // Versão booleana de tryAdopt (mantida para os testes).
     public static boolean adoptBlockchain(List<Block> received) {
         return tryAdopt(received) == AdoptResult.ADOPTED;
     }
 
-    /**
-     * Cria e minera um novo bloco no topo da cadeia local.
-     * Não faz broadcast: quem chama decide se propaga (NodeServer).
-     *
-     * A mineração acontece fora do lock para não bloquear o nó. Se a
-     * cadeia mudar enquanto minera (outro nó propagou um bloco), o bloco
-     * é minerado de novo sobre o novo topo.
-     */
     public static boolean mineNewBlock(String data) {
 
         if (data == null || data.trim().isEmpty()) {

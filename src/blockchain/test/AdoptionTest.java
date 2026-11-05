@@ -1,17 +1,18 @@
 
-package blockchain;
+package blockchain.test;
 
 import java.util.ArrayList;
+
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
 
 public class AdoptionTest {
 
     public static void main(String[] args) {
 
-        // Guarda a blockchain atual para restaurá-la no final.
         ArrayList<Block> blockchainOriginal = NoobChain.getBlockchain();
 
         try {
-            // Cria uma blockchain local de teste com 2 blocos.
             ArrayList<Block> local = new ArrayList<>();
 
             Block bloco0 = new Block("Bloco 0", "0");
@@ -27,7 +28,6 @@ public class AdoptionTest {
             System.out.println("Blockchain local: "
                     + NoobChain.size() + " blocos.");
 
-            // TESTE 1: cadeia válida, mas do mesmo tamanho.
             ArrayList<Block> mesmaTamanho =
                     new ArrayList<>(local);
 
@@ -39,7 +39,6 @@ public class AdoptionTest {
                     + !resultado1
             );
 
-            // TESTE 2: cadeia válida e maior.
             ArrayList<Block> maior =
                     new ArrayList<>(local);
 
@@ -55,7 +54,6 @@ public class AdoptionTest {
                     + resultado2
             );
 
-            // TESTE 3: cadeia adulterada (e maior que a local).
             ArrayList<Block> adulterada =
                     new ArrayList<>(maior);
 
@@ -73,7 +71,6 @@ public class AdoptionTest {
             );
 
         } finally {
-            // Restaura a blockchain original.
             NoobChain.setBlockchain(blockchainOriginal);
         }
     }

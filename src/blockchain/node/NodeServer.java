@@ -1,4 +1,4 @@
-package blockchain;
+package blockchain.node;
 
 import java.io.BufferedReader;
 import java.io.EOFException;
@@ -15,42 +15,20 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Nó "servent" do protocolo BCP: servidor e cliente ao mesmo tempo.
- *
- * Uso:
- *   NodeServer <porta> SEED                -> nó semente (cria a cadeia)
- *   NodeServer <porta> [<seedHost:porta>]  -> nó comum
- *
- * O nó só escuta a porta ao iniciar: nada é enviado automaticamente.
- * Cada passo dos fluxos é disparado por um comando no console:
- *
- *   Fluxo A (bootstrap e descoberta)
- *     conectar [ip:porta]  -> passo 1: abre a conexão TCP (padrão: seed)
- *     hello                -> passos 2 e 3: HELLO e espera o ACK
- *     get_peers            -> passos 4, 5 e 6: GET_PEERS, PEERS_LIST, adiciona
- *
- *   Fluxo B (sincronização, na conexão aberta)
- *     get_blockchain       -> passos 1, 2 e 3: GET_BLOCKCHAIN, BLOCKCHAIN_COPY,
- *                             validação, consenso e REJECT/ACK
- *
- *   Fluxo C (novo bloco)
- *     minerar <dados>      -> passo 1: PoW e inserção na cadeia local
- *     broadcast            -> passos 2 e 3: BLOCKCHAIN_COPY a todos os peers
- *
- * O lado que recebe as mensagens responde sozinho (papel de servidor).
- * Toda mensagem enviada ou recebida é impressa com o prefixo [BCP].
- */
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
+import blockchain.network.MessageType;
+import blockchain.network.NetworkConfig;
+import blockchain.network.NetworkMessage;
+import blockchain.network.NodeNetwork;
+import blockchain.network.PeerConnection;
+
 public class NodeServer {
 
-    // Tempo máximo que uma conexão de entrada pode ficar sem mensagens.
-    // É longo porque os passos são digitados à mão.
     private static final int IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-    // ID enviado no HELLO pelos nós: "Node-<porta de escuta>".
     private static final Pattern NODE_ID = Pattern.compile("Node-(\\d{1,5})");
 
-    // Uma thread por conexão recebida.
     private static final ExecutorService connectionPool =
         Executors.newCachedThreadPool(runnable -> {
             Thread thread = new Thread(runnable);
@@ -58,11 +36,9 @@ public class NodeServer {
             return thread;
         });
 
-    // Endereço semente: gravado em NetworkConfig ou informado no argumento.
     private static String seedAddress =
         NetworkConfig.SEED_HOST + ":" + NetworkConfig.SEED_PORT;
 
-    // Conexão de saída aberta pelo comando "conectar".
     private static PeerConnection current;
 
     public static void main(String[] args) {
@@ -80,13 +56,11 @@ public class NodeServer {
             seedAddress = args[1];
         }
 
-        // Apenas o seed cria a blockchain inicial.
         if (seed) {
             NoobChain.initializeBlockchain();
             System.out.println("Tentando minerar o bloco 4...");
             NoobChain.mineNewBlock("Sou o quarto bloco");
         } else {
-            // Os outros nós começam vazios e sincronizam pelo Fluxo B.
             NoobChain.clear();
         }
 
@@ -115,17 +89,12 @@ public class NodeServer {
 
         runConsole();
 
-        // Sem console (stdin fechado), o nó continua servindo.
         try {
             acceptThread.join();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
-
-    // ------------------------------------------------------------------
-    // Papel de servidor (responde sozinho às mensagens recebidas)
-    // ------------------------------------------------------------------
 
     private static void acceptLoop(ServerSocket serverSocket) {
         while (!serverSocket.isClosed()) {
@@ -142,12 +111,7 @@ public class NodeServer {
         }
     }
 
-    /**
-     * Atende uma conexão de entrada. A conexão fica aberta e pode
-     * transportar várias mensagens; a primeira precisa ser HELLO.
-     */
     private static void handleConnection(Socket socket) {
-        // Antes do HELLO o peer é identificado pelo IP e porta TCP de origem.
         String peer = socket.getInetAddress().getHostAddress()
             + ":" + socket.getPort();
 
@@ -193,7 +157,6 @@ public class NodeServer {
 
                 PeerConnection.log(false, peer, request);
 
-                // Handshake obrigatório antes de qualquer outra mensagem.
                 if (!handshakeDone) {
                     if (request.getType() != MessageType.HELLO) {
                         sendReject(out, peer,
@@ -225,15 +188,6 @@ public class NodeServer {
         }
     }
 
-    /**
-     * Fluxo A, passo 3 (lado B): valida o HELLO (versão do protocolo e ID
-     * do nó) e confirma com ACK. Devolve o nome usado para o peer nos logs
-     * seguintes, ou null se o handshake foi rejeitado.
-     *
-     * Quando o ID tem o formato "Node-<porta>", o endereço de escuta do
-     * peer é o IP de origem da conexão + essa porta, e ele passa a fazer
-     * parte da lista de pares ativos devolvida em PEERS_LIST.
-     */
     private static String handleHello(
             NetworkMessage request, ObjectOutputStream out,
             Socket socket, String peer) throws IOException {
@@ -288,7 +242,6 @@ public class NodeServer {
         switch (request.getType()) {
 
             case HELLO:
-                // Handshake repetido: apenas confirma de novo.
                 send(out, peer, new NetworkMessage(
                     MessageType.ACK,
                     PeerConnection.PROTOCOL_VERSION + "-"
@@ -297,8 +250,6 @@ public class NodeServer {
                 break;
 
             case GET_PEERS: {
-                // Fluxo A, passo 5 (lado B): endereços dos OUTROS nós
-                // conhecidos (sem o próprio solicitante).
                 ArrayList<String> others = NodeNetwork.getPeers();
                 others.remove(peer);
                 send(out, peer, new NetworkMessage(
@@ -312,7 +263,6 @@ public class NodeServer {
             }
 
             case GET_BLOCKCHAIN: {
-                // Fluxo B, passo 2 (lado B): envia a cópia da cadeia local.
                 ArrayList<Block> copy = NoobChain.getBlockchain();
                 send(out, peer, new NetworkMessage(
                     MessageType.BLOCKCHAIN_COPY, copy
@@ -325,8 +275,6 @@ public class NodeServer {
             }
 
             case BLOCKCHAIN_COPY: {
-                // Fluxo C, passo 3 (peer receptor): valida a nova cadeia e
-                // atualiza se for válida e maior; senão responde REJECT.
                 ArrayList<Block> received = request.getPayloadAsBlockchain();
                 validateAndAdopt("Fluxo C - passo 3", peer, received, null, out);
                 break;
@@ -334,23 +282,14 @@ public class NodeServer {
 
             case REJECT:
             case ACK:
-                // Resposta final do peer (ex.: fim do Fluxo B); já foi
-                // impressa no log [BCP] e não recebe resposta.
                 break;
 
             default:
-                // PEERS_LIST é enviada apenas pelo servidor.
                 sendReject(out, peer, "Mensagem " + request.getType()
                     + " não é esperada pelo servidor.");
         }
     }
 
-    /**
-     * Validação de criptografia/integridade + regra de consenso, usada no
-     * Fluxo B (passo 3) e no Fluxo C (passo 3). Imprime cada verificação e
-     * responde ACK (adotada) ou REJECT (descartada) por "connection"
-     * (lado cliente) ou por "out" (lado servidor).
-     */
     private static void validateAndAdopt(
             String step, String peer, ArrayList<Block> received,
             PeerConnection connection, ObjectOutputStream out)
@@ -412,11 +351,6 @@ public class NodeServer {
         send(out, peer, new NetworkMessage(MessageType.REJECT, reason));
     }
 
-    // ------------------------------------------------------------------
-    // Papel de cliente (cada passo é um comando do console)
-    // ------------------------------------------------------------------
-
-    // Fluxo A, passo 1: abre a conexão TCP (sem HELLO).
     private static void cmdConnect(String address) {
         if (address.isEmpty()) {
             address = seedAddress;
@@ -440,7 +374,6 @@ public class NodeServer {
         }
     }
 
-    // Fluxo A, passos 2 e 3: envia HELLO e espera o ACK.
     private static void cmdHello() {
         if (!requireConnection()) {
             return;
@@ -453,14 +386,12 @@ public class NodeServer {
                 "[Fluxo A - passo 3] Handshake confirmado por "
                 + current.getRemoteNode() + ". Próximo passo: get_peers"
             );
-            // O nó com quem o handshake foi feito também é um par conhecido.
             NodeNetwork.addPeer(current.getAddress());
         } catch (Exception e) {
             connectionFailed("[Fluxo A - passo 3]", e);
         }
     }
 
-    // Fluxo A, passos 4, 5 e 6: GET_PEERS, PEERS_LIST e lista de descoberta.
     private static void cmdGetPeers() {
         if (!requireConnection()) {
             return;
@@ -512,7 +443,6 @@ public class NodeServer {
         }
     }
 
-    // Fluxo B: GET_BLOCKCHAIN, BLOCKCHAIN_COPY, validação, consenso e REJECT/ACK.
     private static void cmdGetBlockchain() {
         if (!requireConnection()) {
             return;
@@ -550,7 +480,6 @@ public class NodeServer {
         }
     }
 
-    // Fluxo C, passo 1: PoW do novo bloco e inserção na cadeia local.
     private static void cmdMine(String data) {
         if (data.isEmpty()) {
             System.out.println("Uso: minerar <dados do bloco>");
@@ -566,7 +495,6 @@ public class NodeServer {
         }
     }
 
-    // Fluxo C, passo 2: BLOCKCHAIN_COPY para todos os peers da lista.
     private static void cmdBroadcast() {
         ArrayList<Block> copy = NoobChain.getBlockchain();
         ArrayList<String> peers = NodeNetwork.getPeers();
@@ -594,8 +522,6 @@ public class NodeServer {
                 continue;
             }
 
-            // Cada envio usa uma conexão com handshake (HELLO/ACK), exigido
-            // pelo servidor antes de qualquer outra mensagem.
             try (PeerConnection connection =
                     PeerConnection.open(peer, NodeNetwork.getNodeId())) {
 
@@ -640,7 +566,6 @@ public class NodeServer {
         return true;
     }
 
-    // O servidor encerra a conexão depois de um REJECT de handshake.
     private static void checkClosedAfterReject(NetworkMessage response) {
         if (response.getType() == MessageType.REJECT
                 && current != null && !current.isHandshakeDone()) {
@@ -664,10 +589,6 @@ public class NodeServer {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Console
-    // ------------------------------------------------------------------
-
     private static void runConsole() {
         printHelp();
 
@@ -684,7 +605,7 @@ public class NodeServer {
             }
 
             if (line == null) {
-                return; // Sem console disponível.
+                return;
             }
 
             line = line.trim();

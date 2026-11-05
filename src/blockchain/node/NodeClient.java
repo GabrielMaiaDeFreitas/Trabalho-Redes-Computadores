@@ -1,18 +1,15 @@
-package blockchain;
+package blockchain.node;
 
 import java.util.ArrayList;
 
-/**
- * Cliente de linha de comando para inspecionar um nó.
- *
- * Uso: NodeClient [host] [porta] [ALL | BLOCKCHAIN | PEERS]
- *
- * Todas as operações usam uma única conexão, como no Fluxo A:
- * HELLO -> ACK -> GET_BLOCKCHAIN -> BLOCKCHAIN_COPY -> GET_PEERS -> PEERS_LIST.
- *
- * Para minerar ou forçar sincronização, use os comandos do console do
- * próprio nó (NodeServer): "minerar <dados>", "broadcast", "get_blockchain".
- */
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
+import blockchain.network.MessageType;
+import blockchain.network.NetworkConfig;
+import blockchain.network.NetworkMessage;
+import blockchain.network.NodeNetwork;
+import blockchain.network.PeerConnection;
+
 public class NodeClient {
 
     public static void main(String[] args) {
@@ -86,7 +83,6 @@ public class NodeClient {
 
         System.out.println("Resultado da validação: " + result.getReason());
 
-        // Fluxo B: confirma com ACK ou devolve REJECT com o motivo.
         if (result == NoobChain.AdoptResult.ADOPTED) {
             connection.send(new NetworkMessage(
                 MessageType.ACK, result.getReason()

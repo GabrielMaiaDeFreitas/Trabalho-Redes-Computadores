@@ -1,12 +1,14 @@
 
-package blockchain;
+package blockchain.test;
 
 import java.util.ArrayList;
 
-/**
- * Envia a um nó uma cadeia adulterada e espera REJECT.
- * Uso: InvalidBlockchainTest [host] [porta]
- */
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
+import blockchain.network.MessageType;
+import blockchain.network.NetworkMessage;
+import blockchain.network.PeerConnection;
+
 public class InvalidBlockchainTest {
     public static void main(String[] args) {
         String host = args.length > 0 ? args[0] : "localhost";
@@ -14,7 +16,6 @@ public class InvalidBlockchainTest {
                 ? Integer.parseInt(args[1]) : 5000;
 
         try {
-            // Criar uma cadeia de teste válida.
             ArrayList<Block> invalidChain = new ArrayList<>();
 
             Block block0 = new Block("Bloco de teste 0", "0");
@@ -26,7 +27,6 @@ public class InvalidBlockchainTest {
             block1.mineBlock(NoobChain.difficulty);
             invalidChain.add(block1);
 
-            // Adulterar os dados do bloco sem recalcular o hash.
             java.lang.reflect.Field dataField =
                     Block.class.getDeclaredField("data");
             dataField.setAccessible(true);

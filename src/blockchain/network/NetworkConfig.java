@@ -1,17 +1,11 @@
-package blockchain;
+package blockchain.network;
 
 public class NetworkConfig {
 
-    // Endereço semente (seed) gravado estaticamente, como exige a
-    // especificação. É usado quando o NodeServer é iniciado sem o
-    // argumento <seedHost:porta>.
-    // ATENÇÃO: troque pelo IP da máquina que roda o seed no laboratório.
     public static final String SEED_HOST = "192.168.3.160";
 
-    // Porta do seed
     public static final int SEED_PORT = 5000;
 
-    // Portas dos cinco nós
     public static final int NODE_1_PORT = 5000;
     public static final int NODE_2_PORT = 5001;
     public static final int NODE_3_PORT = 5002;

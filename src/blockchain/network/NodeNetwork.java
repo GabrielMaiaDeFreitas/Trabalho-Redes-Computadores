@@ -1,21 +1,16 @@
-package blockchain;
+package blockchain.network;
 
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Lista de peers conhecidos e identificação do próprio nó.
- */
 public class NodeNetwork {
 
     private static final List<String> peers = new ArrayList<>();
 
-    // Porta em que este nó escuta (definida pelo NodeServer).
     private static volatile int ownPort = -1;
 
-    // Identificação enviada no HELLO (ex.: "Node-5001").
     private static volatile String nodeId = "Client";
 
     public static void setOwnPort(int port) {
@@ -41,7 +36,6 @@ public class NodeNetwork {
             return;
         }
 
-        // Não guarda o próprio nó na lista de peers.
         if (isSelf(peer)) {
             return;
         }
@@ -60,10 +54,6 @@ public class NodeNetwork {
         }
     }
 
-    /**
-     * Separa "host:porta" em {host, porta}.
-     * Lança IllegalArgumentException se o formato for inválido.
-     */
     public static String[] parseAddress(String address) {
         if (address == null) {
             throw new IllegalArgumentException("Endereço de par ausente.");
@@ -91,10 +81,6 @@ public class NodeNetwork {
         return new String[] { parts[0].trim(), parts[1].trim() };
     }
 
-    /**
-     * Indica se o endereço aponta para este próprio nó
-     * (mesma porta e um IP desta máquina, incluindo localhost).
-     */
     public static boolean isSelf(String address) {
         if (ownPort < 0) {
             return false;

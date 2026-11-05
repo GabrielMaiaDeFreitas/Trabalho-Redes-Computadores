@@ -1,13 +1,15 @@
 
-package blockchain;
+package blockchain.test;
 
 import java.util.ArrayList;
+
+import blockchain.core.Block;
+import blockchain.core.NoobChain;
 
 public class BlockchainTest {
 
     public static void main(String[] args) {
 
-        // Cria uma cadeia de teste com dois blocos.
         Block bloco0 = new Block("Bloco original", "0");
         bloco0.mineBlock(NoobChain.difficulty);
 
@@ -23,7 +25,6 @@ public class BlockchainTest {
             + NoobChain.isChainValid(cadeiaTeste)
         );
 
-        // Simula adulteração: quebra o elo com o bloco anterior.
         bloco1.previousHash = "hash_adulterado";
 
         System.out.println(

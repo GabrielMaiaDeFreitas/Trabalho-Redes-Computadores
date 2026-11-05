@@ -1,20 +1,16 @@
-package blockchain;
+package blockchain.network;
 
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Pacote do protocolo BCP (seção 4.1 da especificação).
- * Toda mensagem trafegada na rede é uma instância desta classe.
- */
+import blockchain.core.Block;
+
 public class NetworkMessage implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
     private final MessageType type;
-    // Tipo Object conforme a especificação; na prática é sempre String,
-    // ArrayList<String>, ArrayList<Block> ou null (todos serializáveis).
     @SuppressWarnings("serial")
     private final Object payload;
 
@@ -35,13 +31,10 @@ public class NetworkMessage implements Serializable {
         return payload;
     }
 
-    // Devolve o payload como texto (HELLO, REJECT, ACK) ou null.
     public String getPayloadAsString() {
         return payload instanceof String ? (String) payload : null;
     }
 
-    // Devolve o payload como blockchain (BLOCKCHAIN_COPY) ou null se o
-    // conteúdo não for uma lista de blocos.
     public ArrayList<Block> getPayloadAsBlockchain() {
         if (!(payload instanceof List)) {
             return null;
@@ -57,8 +50,6 @@ public class NetworkMessage implements Serializable {
         return chain;
     }
 
-    // Devolve o payload como lista de peers (PEERS_LIST) ou null se o
-    // conteúdo não for uma lista de strings.
     public ArrayList<String> getPayloadAsPeers() {
         if (!(payload instanceof List)) {
             return null;
@@ -74,7 +65,6 @@ public class NetworkMessage implements Serializable {
         return peers;
     }
 
-    // Resumo do payload para o log do protocolo.
     public String describePayload() {
         if (payload == null) {
             return "null";
