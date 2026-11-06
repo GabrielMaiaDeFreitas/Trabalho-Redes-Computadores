@@ -14,6 +14,6 @@
     <booleanAttribute key="org.eclipse.jdt.launching.ATTR_USE_CLASSPATH_ONLY_JAR" value="false"/>
     <stringAttribute key="org.eclipse.jdt.launching.MAIN_TYPE" value="blockchain.node.NodeServer"/>
     <stringAttribute key="org.eclipse.jdt.launching.MODULE_NAME" value="blockchain"/>
-    <stringAttribute key="org.eclipse.jdt.launching.PROGRAM_ARGUMENTS" value="5004 192.168.1.7:5000"/>
+    <stringAttribute key="org.eclipse.jdt.launching.PROGRAM_ARGUMENTS" value="5004 10.7.108.234:5000"/>
     <stringAttribute key="org.eclipse.jdt.launching.PROJECT_ATTR" value="blockchain"/>
 </launchConfiguration>
